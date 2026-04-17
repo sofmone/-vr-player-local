@@ -1,0 +1,287 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>360 VR Player Drag Version</title>
+
+<style>
+body { margin:0; background:#000; overflow:hidden; font-family:sans-serif; }
+
+#playerContainer { width:100vw; height:100vh; }
+
+/* 拖拽提示 */
+#dropZone {
+  position:fixed;
+  top:0;
+  left:0;
+  width:100%;
+  height:100%;
+  color:#fff;
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  pointer-events:none;
+  font-size:20px;
+  opacity:0;
+  transition:0.3s;
+  z-index:20;
+}
+
+/* 控制栏 */
+#controls {
+  position:fixed;
+  bottom:20px;
+  left:50%;
+  transform:translateX(-50%);
+  width:80%;
+  background:rgba(0,0,0,0.6);
+  padding:10px;
+  border-radius:10px;
+  color:#fff;
+  opacity:0;
+  transition:0.3s;
+  z-index:10;
+}
+
+.row { display:flex; align-items:center; gap:10px; }
+
+input[type="range"] { width:100%; }
+
+/* 音量 */
+#volumeBox { position:relative; }
+
+#volumeSlider {
+  position:absolute;
+  bottom:30px;
+  left:50%;
+  transform:translateX(-50%);
+  height:100px;
+  display:none;
+}
+
+/* 按钮 */
+#resetView {
+  position:fixed;
+  right:20px;
+  top:50%;
+  transform:translateY(-50%);
+  background:rgba(255,255,255,0.15);
+  padding:10px;
+  border-radius:10px;
+  color:#fff;
+  cursor:pointer;
+}
+
+#fullscreenBtn {
+  position:fixed;
+  right:20px;
+  bottom:20px;
+  background:rgba(0,0,0,0.5);
+  padding:10px;
+  border-radius:10px;
+  color:#fff;
+  cursor:pointer;
+}
+</style>
+</head>
+
+<body>
+
+<div id="playerContainer"></div>
+
+<div id="dropZone">拖拽视频到这里播放</div>
+
+<div id="controls">
+  <div class="row">
+    <button onclick="togglePlay()">▶ / ⏸</button>
+    <span id="time">0:00 / 0:00</span>
+
+    <div id="volumeBox">
+      <button onclick="toggleVolume()">🔊</button>
+      <input type="range" id="volumeSlider" min="0" max="1" step="0.01" value="1">
+    </div>
+
+    <input type="file" id="fileInput" accept="video/*">
+  </div>
+
+  <input type="range" id="progress" min="0" max="100" value="0">
+</div>
+
+<div id="resetView">重置</div>
+<div id="fullscreenBtn">⛶</div>
+
+<script src="https://cdn.jsdelivr.net/npm/three@0.157/build/three.min.js"></script>
+
+<script>
+let camera, scene, renderer, video, texture;
+let controls = document.getElementById("controls");
+let dropZone = document.getElementById("dropZone");
+
+let lon=90, lat=0;
+let startX, startY, onDownLon, onDownLat;
+let isUserInteracting=false;
+let hideTimer;
+
+init();
+animate();
+
+function init(){
+  scene=new THREE.Scene();
+  camera=new THREE.PerspectiveCamera(90,innerWidth/innerHeight,1,1100);
+
+  renderer=new THREE.WebGLRenderer();
+  renderer.setSize(innerWidth,innerHeight);
+  document.getElementById("playerContainer").appendChild(renderer.domElement);
+
+  let geo=new THREE.SphereGeometry(500,60,40);
+  geo.scale(-1,1,1);
+
+  video=document.createElement("video");
+  video.crossOrigin="anonymous";
+
+  texture=new THREE.VideoTexture(video);
+  scene.add(new THREE.Mesh(geo,new THREE.MeshBasicMaterial({map:texture})));
+
+  // 鼠标控制
+  document.addEventListener("mousedown", e=>{
+    isUserInteracting=true;
+    startX=e.clientX;
+    startY=e.clientY;
+    onDownLon=lon;
+    onDownLat=lat;
+  });
+
+  document.addEventListener("mousemove", e=>{
+    if(isUserInteracting){
+      lon=(startX-e.clientX)*0.1+onDownLon;
+      lat=(e.clientY-startY)*0.1+onDownLat;
+    }
+  });
+
+  document.addEventListener("mouseup", ()=>isUserInteracting=false);
+
+  document.addEventListener("wheel", e=>{
+    camera.fov+=e.deltaY*0.05;
+    camera.fov=Math.max(30,Math.min(100,camera.fov));
+    camera.updateProjectionMatrix();
+  });
+
+  // UI显示
+  document.addEventListener("mousemove", e=>{
+    if(e.clientY > innerHeight-120) showControls();
+    else hideControls();
+  });
+
+  // 进度
+  document.getElementById("progress").oninput=e=>{
+    video.currentTime=(e.target.value/100)*video.duration;
+  };
+
+  // 音量
+  document.getElementById("volumeSlider").oninput=e=>{
+    video.volume=e.target.value;
+  };
+
+  // 时间
+  video.ontimeupdate=()=>{
+    if(video.duration){
+      document.getElementById("progress").value=(video.currentTime/video.duration)*100;
+      document.getElementById("time").innerText=
+        format(video.currentTime)+" / "+format(video.duration);
+    }
+  };
+
+  // 文件选择
+  document.getElementById("fileInput").onchange=e=>{
+    loadFile(e.target.files[0]);
+  };
+
+  // 拖拽
+  document.addEventListener("dragover", e=>{
+    e.preventDefault();
+    dropZone.style.opacity=1;
+  });
+
+  document.addEventListener("dragleave", ()=>dropZone.style.opacity=0);
+
+  document.addEventListener("drop", e=>{
+    e.preventDefault();
+    dropZone.style.opacity=0;
+    let file=e.dataTransfer.files[0];
+    loadFile(file);
+  });
+
+  // 重置
+  document.getElementById("resetView").onclick=()=>{
+    lon=90; lat=0;
+  };
+
+  // 全屏
+  document.getElementById("fullscreenBtn").onclick=()=>{
+    if(!document.fullscreenElement){
+      document.body.requestFullscreen();
+    }else{
+      document.exitFullscreen();
+    }
+  };
+
+  window.addEventListener("resize", onResize);
+}
+
+function loadFile(file){
+  let url=URL.createObjectURL(file);
+  video.src=url;
+  video.play();
+}
+
+function togglePlay(){
+  video.paused?video.play():video.pause();
+}
+
+function toggleVolume(){
+  let v=document.getElementById("volumeSlider");
+  v.style.display=v.style.display==="block"?"none":"block";
+}
+
+function showControls(){
+  controls.style.opacity="1";
+  clearTimeout(hideTimer);
+  hideTimer=setTimeout(()=>controls.style.opacity="0",2000);
+}
+
+function hideControls(){
+  clearTimeout(hideTimer);
+  hideTimer=setTimeout(()=>controls.style.opacity="0",500);
+}
+
+function onResize(){
+  camera.aspect=innerWidth/innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth,innerHeight);
+}
+
+function format(t){
+  let m=Math.floor(t/60);
+  let s=Math.floor(t%60);
+  return m+":"+(s<10?"0":"")+s;
+}
+
+function animate(){
+  requestAnimationFrame(animate);
+
+  lat=Math.max(-85,Math.min(85,lat));
+  let phi=THREE.MathUtils.degToRad(90-lat);
+  let theta=THREE.MathUtils.degToRad(lon);
+
+  camera.lookAt(
+    500*Math.sin(phi)*Math.cos(theta),
+    500*Math.cos(phi),
+    500*Math.sin(phi)*Math.sin(theta)
+  );
+
+  renderer.render(scene,camera);
+}
+</script>
+
+</body>
+</html>
